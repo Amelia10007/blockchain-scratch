@@ -2,14 +2,13 @@ use crate::account::SecretAddress;
 use crate::coin::Coin;
 use crate::difficulty::Difficulty;
 use crate::digest::BlockDigest;
-use crate::reward::{Reward, RewardError};
-use crate::signature::{Signature, SignatureBuilder, SignatureSource};
+use crate::signature::{SignatureBuilder, SignatureSource};
 use crate::timestamp::Timestamp;
 use crate::transaction::TransactionError;
-use crate::transfer::Transfer;
+use crate::transfer::{Generation, TransactionBranch, Transfer};
 use crate::verification::{Verified, Yet};
 use apply::Apply;
-use itertools::Iterate;
+use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -41,10 +40,9 @@ impl SignatureSource for BlockHeight {
 }
 
 #[derive(Debug, Clone)]
-pub struct BlockSource<VT> {
+pub struct BlockSource {
     height: BlockHeight,
-    transactions: Vec<Transaction<VT>>,
-    reward: Reward<Verified>,
+    transactions: Vec<Transaction<Verified>>,
     timestamp: Timestamp,
     previous_digest: BlockDigest,
     difficulty: Difficulty,
@@ -52,65 +50,73 @@ pub struct BlockSource<VT> {
     digest_source_except_nonce: Vec<u8>,
 }
 
-impl<VT> BlockSource<VT> {
+impl BlockSource {
     pub fn new<F>(
         height: BlockHeight,
-        transactions: Vec<Transaction<VT>>,
+        transactions: Vec<Transaction<Verified>>,
         previous_digest: BlockDigest,
         difficulty: Difficulty,
         nonce: u64,
         reward_receiver: &SecretAddress,
-        mut reward_rule: F,
-    ) -> Self
+        mut gen_rule: F,
+    ) -> Result<Self, TransactionError>
     where
         F: FnMut(BlockHeight) -> Coin,
     {
-        let reward = {
+        let gen_tx = {
             let in_qty = transactions
                 .iter()
-                .flat_map(|tx| tx.inputs())
-                .map(|transfer| transfer.quantity())
+                .flat_map(Transaction::inputs)
+                .map(TransactionBranch::quantity)
                 .sum::<Coin>();
             let o_qty = transactions
                 .iter()
-                .flat_map(|tx| tx.outputs())
-                .map(|transfer| transfer.quantity())
+                .flat_map(Transaction::outputs)
+                .map(TransactionBranch::quantity)
                 .sum::<Coin>();
-            let r_qty = reward_rule(height) + in_qty - o_qty;
-            Reward::offer(&reward_receiver, r_qty)
+            let r_qty = gen_rule(height) + in_qty - o_qty;
+
+            // Generation transaction
+            let inputs: Vec<Transfer<_>> = vec![];
+            let outputs = vec![Generation::offer(&reward_receiver, r_qty)];
+            crate::transaction::Transaction::offer(reward_receiver, inputs, outputs)
+                .verify_transaction()?
         };
+
+        let transactions = transactions
+            .into_iter()
+            .chain(std::iter::once(gen_tx))
+            .sorted_by_key(Transaction::timestamp)
+            .collect_vec();
 
         let timestamp = Timestamp::now();
 
         let digest_source_except_nonce = builde_digest_source_except_nonce(
             height,
             &transactions,
-            &reward,
             &timestamp,
             &previous_digest,
             &difficulty,
         )
         .finalize();
 
-        Self {
+        let source = Self {
             height,
             transactions,
-            reward,
             timestamp,
             previous_digest,
             difficulty,
             nonce,
             digest_source_except_nonce,
-        }
+        };
+        Ok(source)
     }
 
     pub fn nonce_mut(&mut self) -> &mut u64 {
         &mut self.nonce
     }
 
-    pub fn try_into_block(
-        self,
-    ) -> Result<Block<VT, Verified, Yet, Yet, Verified, Yet>, BlockSource<VT>> {
+    pub fn try_into_block(self) -> Result<Block<Verified, Yet, Yet, Yet, Yet, Yet>, BlockSource> {
         let digest = build_digest_source_from_except_nonce(
             self.digest_source_except_nonce.clone(),
             self.nonce,
@@ -122,7 +128,6 @@ impl<VT> BlockSource<VT> {
             let block = Block {
                 height: self.height,
                 transactions: self.transactions,
-                reward: self.reward,
                 timestamp: self.timestamp,
                 previous_digest: self.previous_digest,
                 difficulty: self.difficulty,
@@ -137,43 +142,20 @@ impl<VT> BlockSource<VT> {
     }
 }
 
-#[derive(Debug)]
-pub enum ExtendedTransfer<'a> {
-    Transfer(&'a Transfer<Verified>),
-    Reward(&'a Reward<Verified>),
-}
-
-impl<'a> ExtendedTransfer<'a> {
-    pub fn timestamp(&self) -> Timestamp {
-        match self {
-            ExtendedTransfer::Transfer(t) => t.timestamp(),
-            ExtendedTransfer::Reward(r) => r.timestamp(),
-        }
-    }
-
-    pub fn sign(&self) -> &'a Signature {
-        match self {
-            ExtendedTransfer::Transfer(t) => t.sign(),
-            ExtendedTransfer::Reward(r) => r.sign(),
-        }
-    }
-}
-
 /// ## Verification process using Generics:
 /// Each generic parameter is `Verified` or `Yet`.
-/// - VT: Transaction check using transaction-self check, rewards, and timestamp
-/// - R: Reward check
+/// - VT: Transaction self check
+/// - VTS: Transactions relationship check using generation function
 /// - VU: transaction-Utxo judge using utxo history
 /// - VP: previous block check by using previous digest and timestamp
 /// - VDG: digest matching
 /// - VDI: difficulty check using block history and Proof-of-Work
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Block<VT, R, VU, VP, VDG, VDI> {
+pub struct Block<VT, VTS, VU, VP, VDG, VDI> {
     height: BlockHeight,
     /// All transfers must be UTXO.
+    /// Transactions must be sorted by its timestamp.
     transactions: Vec<Transaction<VT>>,
-    /// A special transaction representing transaction fee + new issue.
-    reward: Reward<R>,
     /// Block creation time, which must be later than any transactions in the block.
     timestamp: Timestamp,
     /// Digest of the previous block.
@@ -186,44 +168,47 @@ pub struct Block<VT, R, VU, VP, VDG, VDI> {
     digest: BlockDigest,
     /// Verification process
     #[serde(skip_serializing)]
-    _phantom: PhantomData<fn() -> (VU, VP, VDG, VDI)>,
+    _phantom: PhantomData<fn() -> (VTS, VU, VP, VDG, VDI)>,
 }
 
-impl<VT, R, VU, VP, VDG, VDI> Block<VT, R, VU, VP, VDG, VDI> {
-    pub fn inputs(&self) -> impl Iterator<Item = &Transfer<VT>> + '_ {
-        self.transactions.iter().flat_map(|tx| tx.inputs())
+impl<VT, VTS, VU, VP, VDG, VDI> Block<VT, VTS, VU, VP, VDG, VDI> {
+    pub fn height(&self) -> BlockHeight {
+        self.height
     }
 
-    pub fn outputs(&self) -> impl Iterator<Item = &Transfer<VT>> + '_ {
-        self.transactions.iter().flat_map(|tx| tx.outputs())
+    pub fn transactions(&self) -> &[Transaction<VT>] {
+        &self.transactions
+    }
+
+    pub fn inputs(&self) -> impl Iterator<Item = &TransactionBranch<VT>> + '_ {
+        self.transactions.iter().flat_map(Transaction::inputs)
+    }
+
+    pub fn outputs(&self) -> impl Iterator<Item = &TransactionBranch<VT>> + '_ {
+        self.transactions.iter().flat_map(Transaction::outputs)
+    }
+
+    pub fn timestamp(&self) -> Timestamp {
+        self.timestamp
+    }
+
+    pub fn previous_digest(&self) -> &BlockDigest {
+        &self.previous_digest
+    }
+
+    pub fn difficulty(&self) -> &Difficulty {
+        &self.difficulty
+    }
+
+    pub fn digest(&self) -> &BlockDigest {
+        &self.digest
     }
 }
 
-impl<VU, VP, VDG, VDI> Block<Verified, Verified, VU, VP, VDG, VDI> {
-    pub fn iter_extended_transfers(&self) -> impl Iterator<Item = ExtendedTransfer<'_>> {
-        let inputs = self
-            .transactions
-            .iter()
-            .flat_map(|tx| tx.inputs())
-            .map(ExtendedTransfer::Transfer);
-
-        inputs.chain(self.iter_extended_outputs())
-    }
-
-    pub fn iter_extended_outputs(&self) -> impl Iterator<Item = ExtendedTransfer<'_>> {
-        let outputs = self
-            .transactions
-            .iter()
-            .flat_map(|tx| tx.outputs())
-            .map(ExtendedTransfer::Transfer);
-        let reward = ExtendedTransfer::Reward(&self.reward);
-
-        outputs.chain(std::iter::once(reward))
-    }
-}
-
-impl<R, VU, VP, VDG, VDI> Block<Yet, R, VU, VP, VDG, VDI> {
-    pub fn verify_transactions(self) -> Result<Block<Verified, R, VU, VP, VDG, VDI>, BlockError> {
+impl<VTS, VU, VP, VDG, VDI> Block<Yet, VTS, VU, VP, VDG, VDI> {
+    pub fn verify_transaction_itself(
+        self,
+    ) -> Result<Block<Verified, VTS, VU, VP, VDG, VDI>, BlockError> {
         // Verify each tx itself
         let transactions = self
             .transactions
@@ -232,39 +217,9 @@ impl<R, VU, VP, VDG, VDI> Block<Yet, R, VU, VP, VDG, VDI> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(BlockError::Transaction)?;
 
-        // Timestamp check
-        if transactions
-            .iter()
-            .map(|tx| tx.timestamp())
-            .any(|stamp| stamp > self.timestamp)
-        {
-            return Err(BlockError::TransactionTimestamp);
-        }
-
-        // Quantity check
-        let in_qty = transactions
-            .iter()
-            .flat_map(|tx| tx.inputs())
-            .map(|transfer| transfer.quantity())
-            .sum::<Coin>();
-        let o_qty = transactions
-            .iter()
-            .flat_map(|tx| tx.outputs())
-            .map(|transfer| transfer.quantity())
-            .sum::<Coin>();
-        let r_qty = self.reward.quantity();
-
-        if in_qty < o_qty {
-            return Err(BlockError::TransactionQuantity);
-        }
-        if in_qty > o_qty + r_qty {
-            return Err(BlockError::RewardQuantity);
-        }
-
         let block = Block {
             height: self.height,
             transactions,
-            reward: self.reward,
             timestamp: self.timestamp,
             previous_digest: self.previous_digest,
             difficulty: self.difficulty,
@@ -278,41 +233,51 @@ impl<R, VU, VP, VDG, VDI> Block<Yet, R, VU, VP, VDG, VDI> {
 }
 
 impl<VT, VU, VP, VDG, VDI> Block<VT, Yet, VU, VP, VDG, VDI> {
-    pub fn verify_rewards<F>(
+    pub fn verify_transaction_relation<F>(
         self,
-        mut reward_rule: F,
+        mut gen_rule: F,
     ) -> Result<Block<VT, Verified, VU, VP, VDG, VDI>, BlockError>
     where
         F: FnMut(BlockHeight) -> Coin,
     {
-        let reward = self.reward.verify().map_err(BlockError::Reward)?;
+        // Timestamp check
+        if self
+            .transactions
+            .iter()
+            .map(Transaction::timestamp)
+            .any(|stamp| stamp > self.timestamp)
+        {
+            return Err(BlockError::TransactionTimestamp);
+        }
+        // Timestamp sorted check
+        if !is_sorted::IsSorted::is_sorted(
+            &mut self.transactions.iter().map(Transaction::timestamp),
+        ) {
+            return Err(BlockError::TransactionTimestamp);
+        }
 
         // Quantity check
         let in_qty = self
             .transactions
             .iter()
-            .flat_map(|tx| tx.inputs())
-            .map(|transfer| transfer.quantity())
+            .flat_map(Transaction::inputs)
+            .map(TransactionBranch::quantity)
             .sum::<Coin>();
         let o_qty = self
             .transactions
             .iter()
-            .flat_map(|tx| tx.outputs())
-            .map(|transfer| transfer.quantity())
+            .flat_map(Transaction::outputs)
+            .map(TransactionBranch::quantity)
             .sum::<Coin>();
+        let r_qty = gen_rule(self.height);
 
-        if reward.quantity() != reward_rule(self.height) + in_qty - o_qty {
-            return Err(BlockError::RewardQuantity);
-        }
-
-        if reward.timestamp() > self.timestamp {
-            return Err(BlockError::RewardTimestamp);
+        if in_qty + r_qty != o_qty {
+            return Err(BlockError::TransactionQuantity);
         }
 
         let block = Block {
             height: self.height,
             transactions: self.transactions,
-            reward,
             timestamp: self.timestamp,
             previous_digest: self.previous_digest,
             difficulty: self.difficulty,
@@ -320,6 +285,7 @@ impl<VT, VU, VP, VDG, VDI> Block<VT, Yet, VU, VP, VDG, VDI> {
             digest: self.digest,
             _phantom: PhantomData,
         };
+
         Ok(block)
     }
 }
@@ -330,15 +296,14 @@ impl<VP, VDG, VDI> Block<Verified, Verified, Yet, VP, VDG, VDI> {
         mut utxo_judge: F,
     ) -> Result<Block<Verified, Verified, Verified, VP, VDG, VDI>, BlockError>
     where
-        F: FnMut(&ExtendedTransfer<'_>) -> bool,
+        F: FnMut(&[Transaction<Verified>]) -> bool,
     {
-        let all_utxo = self.iter_extended_transfers().all(|t| utxo_judge(&t));
+        let all_utxo = utxo_judge(&self.transactions);
 
         if all_utxo {
             let block = Block {
                 height: self.height,
                 transactions: self.transactions,
-                reward: self.reward,
                 timestamp: self.timestamp,
                 previous_digest: self.previous_digest,
                 difficulty: self.difficulty,
@@ -348,17 +313,17 @@ impl<VP, VDG, VDI> Block<Verified, Verified, Yet, VP, VDG, VDI> {
             };
             Ok(block)
         } else {
-            Err(BlockError::UsedTransactionOutput)
+            Err(BlockError::Utxo)
         }
     }
 }
 
-impl<VT, R, VU, VDG, VDI> Block<VT, R, VU, Yet, VDG, VDI> {
+impl<VT, VTS, VU, VDG, VDI> Block<VT, VTS, VU, Yet, VDG, VDI> {
     pub fn verify_previous_block<'a, F1, F2>(
         self,
         mut digest_history: F1,
         mut timestamp_history: F2,
-    ) -> Result<Block<VT, R, VU, Verified, VDG, VDI>, BlockError>
+    ) -> Result<Block<VT, VTS, VU, Verified, VDG, VDI>, BlockError>
     where
         F1: FnMut(BlockHeight) -> Option<&'a BlockDigest>,
         F2: FnMut(BlockHeight) -> Option<Timestamp>,
@@ -375,7 +340,6 @@ impl<VT, R, VU, VDG, VDI> Block<VT, R, VU, Yet, VDG, VDI> {
                         let block = Block {
                             height: self.height,
                             transactions: self.transactions,
-                            reward: self.reward,
                             timestamp: self.timestamp,
                             previous_digest: self.previous_digest,
                             difficulty: self.difficulty,
@@ -393,7 +357,6 @@ impl<VT, R, VU, VDG, VDI> Block<VT, R, VU, Yet, VDG, VDI> {
                 let block = Block {
                     height: self.height,
                     transactions: self.transactions,
-                    reward: self.reward,
                     timestamp: self.timestamp,
                     previous_digest: self.previous_digest,
                     difficulty: self.difficulty,
@@ -407,12 +370,11 @@ impl<VT, R, VU, VDG, VDI> Block<VT, R, VU, Yet, VDG, VDI> {
     }
 }
 
-impl<VT, R, VU, VP, VDI> Block<VT, R, VU, VP, Yet, VDI> {
-    pub fn verify_digest(self) -> Result<Block<VT, R, VU, VP, Verified, VDI>, BlockError> {
+impl<VT, VTS, VU, VP, VDI> Block<VT, VTS, VU, VP, Yet, VDI> {
+    pub fn verify_digest(self) -> Result<Block<VT, VTS, VU, VP, Verified, VDI>, BlockError> {
         let digest_source = build_digest_source(
             self.height,
             &self.transactions,
-            &self.reward,
             &self.timestamp,
             &self.previous_digest,
             &self.difficulty,
@@ -425,7 +387,6 @@ impl<VT, R, VU, VP, VDI> Block<VT, R, VU, VP, Yet, VDI> {
             let block = Block {
                 height: self.height,
                 transactions: self.transactions,
-                reward: self.reward,
                 timestamp: self.timestamp,
                 previous_digest: self.previous_digest,
                 difficulty: self.difficulty,
@@ -440,11 +401,11 @@ impl<VT, R, VU, VP, VDI> Block<VT, R, VU, VP, Yet, VDI> {
     }
 }
 
-impl<VT, R, VU, VP, VDG> Block<VT, R, VU, VP, VDG, Yet> {
+impl<VT, VTS, VU, VP, VDG> Block<VT, VTS, VU, VP, VDG, Yet> {
     pub fn verify_difficulty(
         self,
         expected_difficulty: &Difficulty,
-    ) -> Result<Block<VT, R, VU, VP, VDG, Verified>, BlockError> {
+    ) -> Result<Block<VT, VTS, VU, VP, VDG, Verified>, BlockError> {
         if &self.difficulty < expected_difficulty {
             return Err(BlockError::InsufficientDifficulty);
         }
@@ -453,7 +414,6 @@ impl<VT, R, VU, VP, VDG> Block<VT, R, VU, VP, VDG, Yet> {
             let block = Block {
                 height: self.height,
                 transactions: self.transactions,
-                reward: self.reward,
                 timestamp: self.timestamp,
                 previous_digest: self.previous_digest,
                 difficulty: self.difficulty,
@@ -478,7 +438,6 @@ impl<'de> Deserialize<'de> for Block<Yet, Yet, Yet, Yet, Yet, Yet> {
         struct Inner {
             height: BlockHeight,
             transactions: Vec<Transaction<Yet>>,
-            reward: Reward<Yet>,
             timestamp: Timestamp,
             previous_digest: BlockDigest,
             difficulty: Difficulty,
@@ -491,7 +450,6 @@ impl<'de> Deserialize<'de> for Block<Yet, Yet, Yet, Yet, Yet, Yet> {
         let block = Block {
             height: inner.height,
             transactions: inner.transactions,
-            reward: inner.reward,
             timestamp: inner.timestamp,
             previous_digest: inner.previous_digest,
             difficulty: inner.difficulty,
@@ -508,10 +466,7 @@ pub enum BlockError {
     Transaction(TransactionError),
     TransactionQuantity,
     TransactionTimestamp,
-    Reward(RewardError),
-    RewardQuantity,
-    RewardTimestamp,
-    UsedTransactionOutput,
+    Utxo,
     Chain,
     Digest,
     InsufficientDifficulty,
@@ -526,12 +481,7 @@ impl Display for BlockError {
             BlockError::TransactionTimestamp => {
                 write!(f, "Block contains a newer transaction than itself")
             }
-            BlockError::Reward(e) => {
-                write!(f, "Block contains an invalid reward transaction: {}", e)
-            }
-            BlockError::RewardQuantity => write!(f, "Invalid reward quantity"),
-            BlockError::RewardTimestamp => write!(f, "Invalid reward timestamp"),
-            BlockError::UsedTransactionOutput => write!(f, "Block contains a spent transaction"),
+            BlockError::Utxo => write!(f, "Block contains not-utxo transfer or coin generation"),
             BlockError::Chain => write!(f, "Block is isolated from chain"),
             BlockError::Digest => write!(f, "Digest mismatch"),
             BlockError::InsufficientDifficulty => write!(f, "Insufficient difficulty"),
@@ -544,16 +494,14 @@ impl Error for BlockError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             BlockError::Transaction(e) => Some(e),
-            BlockError::Reward(e) => Some(e),
             _ => None,
         }
     }
 }
 
-fn builde_digest_source_except_nonce<VT, R>(
+fn builde_digest_source_except_nonce<VT>(
     height: BlockHeight,
     transactions: &[Transaction<VT>],
-    reward: &Reward<R>,
     timestamp: &Timestamp,
     previous_digest: &BlockDigest,
     difficulty: &Difficulty,
@@ -561,7 +509,6 @@ fn builde_digest_source_except_nonce<VT, R>(
     let mut builder = SignatureBuilder::new();
     height.write_bytes(&mut builder);
     transactions.write_bytes(&mut builder);
-    reward.write_bytes(&mut builder);
     timestamp.write_bytes(&mut builder);
     previous_digest.write_bytes(&mut builder);
     difficulty.write_bytes(&mut builder);
@@ -577,10 +524,9 @@ fn build_digest_source_from_except_nonce(
     builder
 }
 
-fn build_digest_source<VT, R>(
+fn build_digest_source<VT>(
     height: BlockHeight,
     transactions: &[Transaction<VT>],
-    reward: &Reward<R>,
     timestamp: &Timestamp,
     previous_digest: &BlockDigest,
     difficulty: &Difficulty,
@@ -589,7 +535,6 @@ fn build_digest_source<VT, R>(
     let builder = builde_digest_source_except_nonce(
         height,
         transactions,
-        reward,
         timestamp,
         previous_digest,
         difficulty,
@@ -601,8 +546,15 @@ fn build_digest_source<VT, R>(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_genesis_pow_process() {
+    fn difficulty() -> Difficulty {
+        Difficulty::new(1)
+    }
+
+    fn generation_rule(_: BlockHeight) -> Coin {
+        Coin::from(1)
+    }
+
+    fn create_unverified_genesis_block() -> Block<Verified, Yet, Yet, Yet, Yet, Yet> {
         let input_sender = SecretAddress::create();
         let reliever = SecretAddress::create();
         let output_receiver = SecretAddress::create().to_public_address();
@@ -621,46 +573,107 @@ mod tests {
         // Block search process
         let height = BlockHeight::genesis();
         let previous_digest = BlockDigest::digest(&[]);
-        let difficulty = Difficulty::new(8);
         let nonce = 0;
-        let reward_rule = |_: BlockHeight| Coin::from(1);
 
         let mut block_source = BlockSource::new(
             height,
             vec![tx],
             previous_digest,
-            difficulty.clone(),
+            difficulty(),
             nonce,
             &miner,
-            reward_rule,
-        );
+            generation_rule,
+        )
+        .unwrap();
 
-        let block = loop {
+        // Proof of work
+        loop {
             *block_source.nonce_mut() = rand::random();
 
             match block_source.try_into_block() {
                 Ok(block) => break block,
                 Err(source) => block_source = source,
             }
-        };
+        }
+    }
 
+    #[test]
+    fn test_genesis_pow_process() {
+        let difficulty = difficulty();
+        let block = create_unverified_genesis_block();
+
+        let block = block.verify_transaction_relation(generation_rule).unwrap();
         let block = block.verify_utxo(|_| true).unwrap();
+        let block = block.verify_digest().unwrap();
         let block = block.verify_previous_block(|_| None, |_| None).unwrap();
         let block = block.verify_difficulty(&difficulty).unwrap();
-
-        assert_eq!(block.reward.quantity(), Coin::from(2));
 
         // Deserialization to verification process
         let ser = serde_json::to_string(&block).unwrap();
         let de = serde_json::from_str::<Block<_, _, _, _, _, _>>(&ser).unwrap();
 
-        let de = de.verify_transactions().unwrap();
-        let de = de.verify_rewards(reward_rule).unwrap();
-        let de = de.verify_digest().unwrap();
+        let de = de.verify_transaction_itself().unwrap();
+        let de = de.verify_transaction_relation(generation_rule).unwrap();
         let de = de.verify_utxo(|_| true).unwrap();
+        let de = de.verify_digest().unwrap();
         let de = de.verify_previous_block(|_| None, |_| None).unwrap();
         let de = de.verify_difficulty(&difficulty).unwrap();
 
         assert_eq!(de, block);
+    }
+
+    #[test]
+    fn test_verify_transaction_relation_too_much_quantity() {
+        let block = create_unverified_genesis_block();
+        let zero_gen_rule = |_: BlockHeight| Coin::from(0);
+        // Block coin generation is too much under zero_gen_rule
+        let block = block.verify_transaction_relation(zero_gen_rule);
+
+        assert_eq!(Err(BlockError::TransactionQuantity), block);
+    }
+
+    #[test]
+    fn test_verify_transaction_relation_too_few_quantity() {
+        let block = create_unverified_genesis_block();
+        let much_gen_rule = |_: BlockHeight| Coin::from(10000);
+        // Block coin generation is too few under much_gen_rule
+        let block = block.verify_transaction_relation(much_gen_rule);
+
+        assert_eq!(Err(BlockError::TransactionQuantity), block);
+    }
+
+    #[test]
+    fn test_verify_utxo_fail() {
+        let block = create_unverified_genesis_block();
+        let block = block.verify_transaction_relation(generation_rule).unwrap();
+
+        let utxo_judge_always_fail = |_: &[Transaction<_>]| false;
+        let block = block.verify_utxo(utxo_judge_always_fail);
+
+        assert_eq!(Err(BlockError::Utxo), block);
+    }
+
+    #[test]
+    fn test_verify_digest_fail() {
+        let block = create_unverified_genesis_block();
+        let mut block = block.verify_transaction_relation(generation_rule).unwrap();
+
+        block.height = block.height.next(); // Data tampering!
+
+        let block = block.verify_digest();
+
+        assert_eq!(Err(BlockError::Digest), block);
+    }
+
+    #[test]
+    fn test_verify_difficulty_fail() {
+        let block = create_unverified_genesis_block();
+        let block = block.verify_transaction_relation(generation_rule).unwrap();
+
+        let too_difficult = Difficulty::new(255);
+
+        let block = block.verify_difficulty(&too_difficult);
+
+        assert_eq!(Err(BlockError::InsufficientDifficulty), block);
     }
 }

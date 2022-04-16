@@ -2,6 +2,7 @@ use crate::account::{Address, SecretAddress};
 use crate::coin::Coin;
 use crate::signature::{Signature, SignatureBuilder, SignatureSource};
 use crate::timestamp::Timestamp;
+use crate::transfer::TransactionBranch;
 use crate::transfer::Transfer;
 use crate::transfer::TransferError;
 use crate::verification::{Verified, Yet};
@@ -9,9 +10,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::marker::PhantomData;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransferVerified;
 
 /// ## Verification process using Generics:
 /// Each generic parameter is `Verified` or `Yet`.
@@ -22,10 +20,10 @@ pub struct Transaction<VTF, VTX> {
     contractor: Address,
     /// At least 1 input is required.
     /// All receiver of inputs are contractor.
-    inputs: Vec<Transfer<VTF>>,
+    inputs: Vec<TransactionBranch<VTF>>,
     /// At least 1 output is required.
     /// All signer of outputs are contractor.
-    outputs: Vec<Transfer<VTF>>,
+    outputs: Vec<TransactionBranch<VTF>>,
     timestamp: Timestamp,
     /// Contractor's sign
     sign: Signature,
@@ -34,11 +32,11 @@ pub struct Transaction<VTF, VTX> {
 }
 
 impl<VTR, VTX> Transaction<VTR, VTX> {
-    pub fn inputs(&self) -> &[Transfer<VTR>] {
+    pub fn inputs(&self) -> &[TransactionBranch<VTR>] {
         &self.inputs
     }
 
-    pub fn outputs(&self) -> &[Transfer<VTR>] {
+    pub fn outputs(&self) -> &[TransactionBranch<VTR>] {
         &self.outputs
     }
 
@@ -48,11 +46,17 @@ impl<VTR, VTX> Transaction<VTR, VTX> {
 }
 
 impl<VTR> Transaction<VTR, Yet> {
-    pub fn offer(
+    pub fn offer<T, U>(
         contractor: &SecretAddress,
-        inputs: Vec<Transfer<VTR>>,
-        outputs: Vec<Transfer<VTR>>,
-    ) -> Transaction<VTR, Yet> {
+        inputs: Vec<T>,
+        outputs: Vec<U>,
+    ) -> Transaction<VTR, Yet>
+    where
+        T: Into<TransactionBranch<VTR>>,
+        U: Into<TransactionBranch<VTR>>,
+    {
+        let inputs = inputs.into_iter().map(Into::into).collect::<Vec<_>>();
+        let outputs = outputs.into_iter().map(Into::into).collect::<Vec<_>>();
         let timestamp = Timestamp::now();
 
         let sign = {
@@ -78,28 +82,39 @@ impl<VTR> Transaction<VTR, Yet> {
     }
 
     pub fn verify_transaction(self) -> Result<Transaction<VTR, Verified>, TransactionError> {
-        // At least 1 input is required
-        if self.inputs.is_empty() {
-            return Err(TransactionError::Empty);
-        }
         // At least 1 output is required
         if self.outputs.is_empty() {
-            return Err(TransactionError::Empty);
+            return Err(TransactionError::EmptyOutput);
         }
 
         // Input's receiver = contractor
-        if self.inputs.iter().any(|i| i.receiver() != &self.contractor) {
-            return Err(TransactionError::ReceiverMismatch);
-        }
-        // Output's sender = contractor
-        if self.outputs.iter().any(|i| i.sender() != &self.contractor) {
+        if !self.inputs.is_empty() && self.inputs.iter().any(|i| i.receiver() != &self.contractor) {
             return Err(TransactionError::SenderMismatch);
         }
+        // Transfer output's sender = contractor
+        // Note: generations in outputs are not checked.
+        if self
+            .outputs
+            .iter()
+            .filter_map(TransactionBranch::try_as_transfer)
+            .any(|i| i.sender() != &self.contractor)
+        {
+            return Err(TransactionError::ReceiverMismatch);
+        }
 
-        // Input must be equal or smaller than output
-        let input_sum = self.inputs.iter().map(|i| i.quantity()).sum::<Coin>();
-        let output_sum = self.outputs.iter().map(|i| i.quantity()).sum::<Coin>();
-        if input_sum < output_sum {
+        // Input must be equal or smaller than output except for coin generation
+        let input_sum = self
+            .inputs
+            .iter()
+            .map(TransactionBranch::quantity)
+            .sum::<Coin>();
+        let output_sum_except_gen = self
+            .outputs
+            .iter()
+            .filter_map(TransactionBranch::try_as_transfer)
+            .map(Transfer::quantity)
+            .sum::<Coin>();
+        if input_sum < output_sum_except_gen {
             return Err(TransactionError::QuantityMismatch);
         }
 
@@ -116,7 +131,7 @@ impl<VTR> Transaction<VTR, Yet> {
         // Sign
         let signature_source = self.build_signature_source();
         if !self.contractor.verify(&signature_source, &self.sign) {
-            return Err(TransactionError::SignMismatch);
+            return Err(TransactionError::InvalidSign);
         }
 
         let tx = Transaction {
@@ -133,23 +148,23 @@ impl<VTR> Transaction<VTR, Yet> {
 
 impl Transaction<Yet, Yet> {
     pub fn verify(self) -> Result<Transaction<Verified, Verified>, TransactionError> {
-        self.verify_transfers()
+        self.verify_branch()
             .and_then(Transaction::verify_transaction)
     }
 }
 
 impl<VTX> Transaction<Yet, VTX> {
-    pub fn verify_transfers(self) -> Result<Transaction<Verified, VTX>, TransactionError> {
+    pub fn verify_branch(self) -> Result<Transaction<Verified, VTX>, TransactionError> {
         let inputs = self
             .inputs
             .into_iter()
-            .map(Transfer::verify)
+            .map(TransactionBranch::verify)
             .collect::<Result<_, _>>()
             .map_err(TransactionError::Transfer)?;
         let outputs = self
             .outputs
             .into_iter()
-            .map(Transfer::verify)
+            .map(TransactionBranch::verify)
             .collect::<Result<_, _>>()
             .map_err(TransactionError::Transfer)?;
 
@@ -185,8 +200,8 @@ impl<'de> Deserialize<'de> for Transaction<Yet, Yet> {
         #[derive(Deserialize)]
         struct Inner {
             contractor: Address,
-            inputs: Vec<Transfer<Yet>>,
-            outputs: Vec<Transfer<Yet>>,
+            inputs: Vec<TransactionBranch<Yet>>,
+            outputs: Vec<TransactionBranch<Yet>>,
             timestamp: Timestamp,
             sign: Signature,
         }
@@ -209,17 +224,17 @@ impl<'de> Deserialize<'de> for Transaction<Yet, Yet> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum TransactionError {
     Transfer(TransferError),
-    Empty,
-    /// Outputs' sender must be contractor.
+    EmptyOutput,
+    /// Outputs' sender is not contractor.
     SenderMismatch,
-    /// Inputs' receiver must be contractor.
+    /// Inputs' receiver is not contractor.
     ReceiverMismatch,
-    /// Inputs' quantity must be more than outputs'.
+    /// Inputs' quantity is larger than outputs'.
     QuantityMismatch,
-    /// All transfers' timestamp must be older than transaction's.
+    /// Any transfers' timestamp is later than transaction's.
     InvalidTimestamp,
     /// Contractor's sign is invalid.
-    SignMismatch,
+    InvalidSign,
 }
 
 impl Display for TransactionError {
@@ -228,12 +243,12 @@ impl Display for TransactionError {
             TransactionError::Transfer(e) => {
                 write!(f, "Transaction contains an invalid transfer: {}", e)
             }
-            TransactionError::Empty => write!(f, "No input or output in transaction"),
-            TransactionError::SenderMismatch => write!(f, "Sender mismatch"),
-            TransactionError::ReceiverMismatch => write!(f, "Receiver mismatch"),
+            TransactionError::EmptyOutput => write!(f, "No output in transaction"),
+            TransactionError::SenderMismatch => write!(f, "Output's sender mismatch"),
+            TransactionError::ReceiverMismatch => write!(f, "Input's receiver mismatch"),
             TransactionError::QuantityMismatch => write!(f, "Quantity mismatch"),
             TransactionError::InvalidTimestamp => write!(f, "Transaction contains newer transfer"),
-            TransactionError::SignMismatch => write!(f, "Contractor's sign is invald"),
+            TransactionError::InvalidSign => write!(f, "Contractor's sign is invald"),
         }
     }
 }
@@ -249,8 +264,8 @@ impl Error for TransactionError {
 
 fn build_signature_source<T>(
     contractor: &Address,
-    inputs: &[Transfer<T>],
-    outputs: &[Transfer<T>],
+    inputs: &[TransactionBranch<T>],
+    outputs: &[TransactionBranch<T>],
     timestamp: Timestamp,
     builder: &mut SignatureBuilder,
 ) {
@@ -262,11 +277,8 @@ fn build_signature_source<T>(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        account::SecretAddress, coin::Coin, transaction::TransactionError, transfer::Transfer,
-    };
-
-    use super::Transaction;
+    use super::*;
+    use crate::transfer::Generation;
 
     #[test]
     fn test_sign_verify() {
@@ -290,7 +302,52 @@ mod tests {
     }
 
     #[test]
-    fn test_quantity_mismatch() {
+    fn test_verify_only_gen() {
+        let contractor = SecretAddress::create();
+        let quantity = Coin::from(42);
+        let gen = Generation::offer(&contractor, quantity);
+
+        let inputs = Vec::<Transfer<_>>::new();
+        let outputs = vec![gen];
+
+        let tx = Transaction::offer(&contractor, inputs, outputs)
+            .verify_transaction()
+            .unwrap();
+
+        let json = serde_json::to_string(&tx).unwrap();
+
+        let unverified = serde_json::from_str::<Transaction<_, _>>(&json).unwrap();
+
+        assert_eq!(Ok(tx), unverified.verify());
+    }
+
+    #[test]
+    fn test_verify_transfer_and_gen() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+        let output_receiver = SecretAddress::create().to_public_address();
+        let quantity = Coin::from(42);
+
+        let input = Transfer::offer(&input_sender, contractor.to_public_address(), quantity);
+        let output = Transfer::offer(&contractor, output_receiver, quantity).into();
+        let gen = Generation::offer(&contractor, quantity).into();
+
+        let inputs = vec![input];
+        let outputs: Vec<TransactionBranch<_>> = vec![output, gen];
+
+        let tx = Transaction::offer(&contractor, inputs, outputs)
+            .verify_transaction()
+            .unwrap();
+
+        let json = serde_json::to_string(&tx).unwrap();
+
+        let unverified = serde_json::from_str::<Transaction<_, _>>(&json).unwrap();
+
+        assert_eq!(Ok(tx), unverified.verify());
+    }
+
+    #[test]
+    fn test_quantity_too_much_output() {
         let input_sender = SecretAddress::create();
         let contractor = SecretAddress::create();
         let output_receiver = SecretAddress::create().to_public_address();
@@ -305,5 +362,123 @@ mod tests {
         let tx = Transaction::offer(&contractor, vec![input], vec![output]).verify_transaction();
 
         assert_eq!(Err(TransactionError::QuantityMismatch), tx);
+    }
+
+    #[test]
+    fn test_verify_error_empty_output() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+
+        let input = Transfer::offer(
+            &input_sender,
+            contractor.to_public_address(),
+            Coin::from(10),
+        );
+        let outputs: Vec<TransactionBranch<_>> = vec![];
+        let tx = Transaction::offer(&contractor, vec![input], outputs).verify_transaction();
+
+        assert_eq!(Err(TransactionError::EmptyOutput), tx);
+    }
+
+    #[test]
+    fn test_verify_error_sender_mismatch() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+        let output_receiver = SecretAddress::create().to_public_address();
+        let quantity = Coin::from(42);
+
+        let mismatched_contractor = SecretAddress::create(); // !
+
+        let input = Transfer::offer(&input_sender, contractor.to_public_address(), quantity);
+        let output = Transfer::offer(&mismatched_contractor, output_receiver, quantity);
+
+        let tx = Transaction::offer(&mismatched_contractor, vec![input], vec![output])
+            .verify_transaction();
+
+        assert_eq!(Err(TransactionError::SenderMismatch), tx);
+    }
+
+    #[test]
+    fn test_verify_error_receiver_mismatch() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+        let output_receiver = SecretAddress::create().to_public_address();
+        let quantity = Coin::from(42);
+
+        let mismatched_contractor = SecretAddress::create(); // !
+
+        let input = Transfer::offer(
+            &input_sender,
+            mismatched_contractor.to_public_address(),
+            quantity,
+        );
+        let output = Transfer::offer(&contractor, output_receiver, quantity);
+
+        let tx = Transaction::offer(&mismatched_contractor, vec![input], vec![output])
+            .verify_transaction();
+
+        assert_eq!(Err(TransactionError::ReceiverMismatch), tx);
+    }
+
+    #[test]
+    fn test_verify_error_input_timestamp() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+        let output_receiver = SecretAddress::create().to_public_address();
+        let quantity = Coin::from(42);
+
+        let input = Transfer::offer(&input_sender, contractor.to_public_address(), quantity);
+        let output = Transfer::offer(&contractor, output_receiver, quantity);
+
+        let mut tx = Transaction::offer(&contractor, vec![input], vec![output]);
+
+        // Input is offered later than transaction creation!
+        tx.inputs[0] =
+            Transfer::offer(&input_sender, contractor.to_public_address(), quantity).into();
+
+        let tx = tx.verify_transaction();
+
+        assert_eq!(Err(TransactionError::InvalidTimestamp), tx);
+    }
+
+    #[test]
+    fn test_verify_error_output_timestamp() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+        let output_receiver = SecretAddress::create().to_public_address();
+        let quantity = Coin::from(42);
+
+        let input = Transfer::offer(&input_sender, contractor.to_public_address(), quantity);
+        let output = Transfer::offer(&contractor, output_receiver.clone(), quantity);
+
+        let mut tx = Transaction::offer(&contractor, vec![input], vec![output]);
+
+        // Input is offered later than transaction creation!
+        tx.outputs[0] = Transfer::offer(&contractor, output_receiver, quantity).into();
+
+        let tx = tx.verify_transaction();
+
+        assert_eq!(Err(TransactionError::InvalidTimestamp), tx);
+    }
+
+    #[test]
+    fn test_verify_error_invalid_sign() {
+        let input_sender = SecretAddress::create();
+        let contractor = SecretAddress::create();
+        let output_receiver = SecretAddress::create().to_public_address();
+        let quantity = Coin::from(42);
+
+        let input = Transfer::offer(&input_sender, contractor.to_public_address(), quantity);
+        let output = Transfer::offer(&contractor, output_receiver.clone(), quantity);
+        let output_tampered = Transfer::offer(&contractor, output_receiver.clone(), Coin::from(1));
+
+        let mut tx = Transaction::offer(&contractor, vec![input], vec![output]);
+
+        // Tamper!
+        tx.outputs[0] = output_tampered.into();
+
+        let tx = tx.verify_transaction();
+
+        assert_eq!(Err(TransactionError::InvalidSign), tx);
     }
 }

@@ -20,6 +20,7 @@ bytes = "*"
 chrono = { version = "*", features = ["serde"] }
 ed25519 = "*"
 ed25519-dalek = { version = "*", features = ["serde"] }
+is_sorted = "*"
 itertools = "*"
 rand = "*"
 serde = { version = "*", features = ["derive"] }

@@ -5,7 +5,6 @@ pub mod difficulty;
 pub mod digest;
 pub mod history;
 pub mod pace_maker;
-pub mod reward;
 pub mod signature;
 pub mod timestamp;
 pub mod transaction;
