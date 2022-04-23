@@ -16,14 +16,15 @@ path = "example/pow.rs"
 [dependencies]
 apply = "*"
 arrayvec = { version = "*", features = ["serde"] }
-bytes = "*"
 chrono = { version = "*", features = ["serde"] }
-ed25519 = "*"
 ed25519-dalek = { version = "*", features = ["serde"] }
 is_sorted = "*"
 itertools = "*"
 rand = "*"
+rand_core = { version = "*", features = ["getrandom"] }
 serde = { version = "*", features = ["derive"] }
 serde_arrays = "*"
-serde_json = "*"
 sha2 = "*"
+
+[dev-dependencies]
+serde_json = "*"

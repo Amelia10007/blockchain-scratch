@@ -20,7 +20,6 @@ fn main() {
             .verify_transaction()
             .unwrap()
     };
-
     // Block search process
     let height = BlockHeight::genesis();
     let previous_digest = BlockDigest::digest(&[]);

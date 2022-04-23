@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Signature(ed25519::Signature);
+pub struct Signature(ed25519_dalek::Signature);
 
 impl Signature {
-    pub fn from(sign: ed25519::Signature) -> Self {
+    pub fn from(sign: ed25519_dalek::Signature) -> Self {
         Self(sign)
     }
 }
@@ -19,8 +19,8 @@ impl Hash for Signature {
     }
 }
 
-impl AsRef<ed25519::Signature> for Signature {
-    fn as_ref(&self) -> &ed25519::Signature {
+impl AsRef<ed25519_dalek::Signature> for Signature {
+    fn as_ref(&self) -> &ed25519_dalek::Signature {
         &self.0
     }
 }

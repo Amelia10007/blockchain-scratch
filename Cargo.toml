@@ -2,4 +2,9 @@
 
 members = [
     "blockchain-core",
+    "blockchain-net",
+    "bcaddr",
+    "proxy",
+    "fullnode",
+    "wallet",
 ]

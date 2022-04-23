@@ -11,7 +11,14 @@ pub mod transaction;
 pub mod transfer;
 pub mod verification;
 
-use verification::{Verified, Yet};
+pub use verification::{Verified, Yet};
+
+pub use account::{Address, SecretAddress};
+pub use block::{Block, BlockHeight, BlockSource};
+pub use coin::Coin;
+pub use difficulty::Difficulty;
+pub use transaction::Transaction;
+pub use transfer::Transfer;
 
 pub type UnverifiedBlock = block::Block<Yet, Yet, Yet, Yet, Yet, Yet>;
 pub type VerifiedBlock = block::Block<Verified, Verified, Verified, Verified, Verified, Verified>;

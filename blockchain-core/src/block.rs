@@ -499,6 +499,12 @@ impl Error for BlockError {
     }
 }
 
+pub fn block_coin_generation_rule(height: BlockHeight) -> Coin {
+    let quantity = (1_u64 << 16) >> (height.0 / 100);
+    let quantity = quantity.max(1);
+    Coin::from(quantity)
+}
+
 fn builde_digest_source_except_nonce<VT>(
     height: BlockHeight,
     transactions: &[Transaction<VT>],

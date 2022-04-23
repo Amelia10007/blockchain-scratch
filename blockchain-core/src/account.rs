@@ -3,14 +3,14 @@ use apply::Apply;
 use ed25519_dalek::{Keypair, PublicKey, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SecretAddress {
     keypair: Keypair,
 }
 
 impl SecretAddress {
     pub fn create() -> Self {
-        let keypair = Keypair::generate(&mut rand::thread_rng());
+        let keypair = Keypair::generate(&mut rand_core::OsRng {});
         SecretAddress { keypair }
     }
 

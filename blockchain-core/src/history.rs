@@ -150,8 +150,8 @@ impl BlockHistory {
         Self { blocks: vec![] }
     }
 
-    pub fn iter_sorted_blocks_by_height(&self) -> impl Iterator<Item = &VerifiedBlock> + '_ {
-        self.blocks.iter()
+    pub fn sorted_blocks_by_height(&self) -> &[VerifiedBlock] {
+        &self.blocks
     }
 
     pub fn block_at(&self, height: BlockHeight) -> Option<&VerifiedBlock> {

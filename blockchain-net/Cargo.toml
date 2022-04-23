@@ -1,0 +1,46 @@
+[package]
+name = "blockchain-net"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+blockchain-core = { path = "../blockchain-core" }
+async-trait = "*"
+bincode = "*"
+serde = { version = "*", features = ["derive"] }
+zeromq = { version = "*", optional = true }
+tokio = "*"
+
+[dev-dependencies]
+tokio = "*"
+
+[features]
+default = ["async-net", "zeromq"]
+async-net = []
+
+[[example]]
+name = "pub"
+path = "./example/pub.rs"
+
+[[example]]
+name = "sub"
+path = "./example/sub.rs"
+
+[[example]]
+name = "topic_proxy"
+path = "./example/topic_proxy.rs"
+
+[[example]]
+name = "server"
+path = "./example/server.rs"
+
+
+[[example]]
+name = "client"
+path = "./example/client.rs"
+
+[[example]]
+name = "service_proxy"
+path = "./example/service_proxy.rs"
