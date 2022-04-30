@@ -39,6 +39,12 @@ impl SignatureSource for BlockHeight {
     }
 }
 
+impl Display for BlockHeight {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockSource {
     height: BlockHeight,
@@ -319,53 +325,28 @@ impl<VP, VDG, VDI> Block<Verified, Verified, Yet, VP, VDG, VDI> {
 }
 
 impl<VT, VTS, VU, VDG, VDI> Block<VT, VTS, VU, Yet, VDG, VDI> {
-    pub fn verify_previous_block<'a, F1, F2>(
+    /// `ledger`: Takes blocks height and previous block's digest
+    pub fn verify_previous_block<F>(
         self,
-        mut digest_history: F1,
-        mut timestamp_history: F2,
+        mut ledger: F,
     ) -> Result<Block<VT, VTS, VU, Verified, VDG, VDI>, BlockError>
     where
-        F1: FnMut(BlockHeight) -> Option<&'a BlockDigest>,
-        F2: FnMut(BlockHeight) -> Option<Timestamp>,
+        F: FnMut(BlockHeight, &BlockDigest) -> bool,
     {
-        match self.height.previous() {
-            Some(h) => {
-                let digest = digest_history(h);
-                let stamp = timestamp_history(h);
-
-                match (digest, stamp) {
-                    (Some(digest), Some(stamp))
-                        if digest == &self.previous_digest && stamp < self.timestamp =>
-                    {
-                        let block = Block {
-                            height: self.height,
-                            transactions: self.transactions,
-                            timestamp: self.timestamp,
-                            previous_digest: self.previous_digest,
-                            difficulty: self.difficulty,
-                            nonce: self.nonce,
-                            digest: self.digest,
-                            _phantom: PhantomData,
-                        };
-                        Ok(block)
-                    }
-                    _ => Err(BlockError::Chain),
-                }
-            }
-            // This is genesis block
-            None => {
-                let block = Block {
-                    height: self.height,
-                    transactions: self.transactions,
-                    timestamp: self.timestamp,
-                    previous_digest: self.previous_digest,
-                    difficulty: self.difficulty,
-                    nonce: self.nonce,
-                    digest: self.digest,
-                    _phantom: PhantomData,
-                };
-                Ok(block)
-            }
+        if ledger(self.height, &self.previous_digest) {
+            let block = Block {
+                height: self.height,
+                transactions: self.transactions,
+                timestamp: self.timestamp,
+                previous_digest: self.previous_digest,
+                difficulty: self.difficulty,
+                nonce: self.nonce,
+                digest: self.digest,
+                _phantom: PhantomData,
+            };
+            Ok(block)
+        } else {
+            Err(BlockError::Chain)
         }
     }
 }
@@ -611,7 +592,7 @@ mod tests {
         let block = block.verify_transaction_relation(generation_rule).unwrap();
         let block = block.verify_utxo(|_| true).unwrap();
         let block = block.verify_digest().unwrap();
-        let block = block.verify_previous_block(|_| None, |_| None).unwrap();
+        let block = block.verify_previous_block(|_, _| true).unwrap();
         let block = block.verify_difficulty(&difficulty).unwrap();
 
         // Deserialization to verification process
@@ -622,7 +603,7 @@ mod tests {
         let de = de.verify_transaction_relation(generation_rule).unwrap();
         let de = de.verify_utxo(|_| true).unwrap();
         let de = de.verify_digest().unwrap();
-        let de = de.verify_previous_block(|_| None, |_| None).unwrap();
+        let de = de.verify_previous_block(|_, _| true).unwrap();
         let de = de.verify_difficulty(&difficulty).unwrap();
 
         assert_eq!(de, block);

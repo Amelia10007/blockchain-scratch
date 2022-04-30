@@ -10,7 +10,7 @@ pub struct SecretAddress {
 
 impl SecretAddress {
     pub fn create() -> Self {
-        let keypair = Keypair::generate(&mut rand_core::OsRng {});
+        let keypair = Keypair::generate(&mut rand::rngs::OsRng {});
         SecretAddress { keypair }
     }
 

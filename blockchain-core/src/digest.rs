@@ -3,7 +3,7 @@ use apply::{Also, Apply};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockDigest(#[serde(with = "serde_arrays")] [u8; 32]);
 
 impl BlockDigest {

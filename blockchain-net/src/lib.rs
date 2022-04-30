@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[cfg(feature = "async-net")]
 pub mod async_net;
@@ -7,16 +7,35 @@ pub mod async_net;
 #[cfg(feature = "zeromq")]
 pub mod impl_zeromq;
 
+pub mod blocking;
+pub mod http;
+
 pub trait Topic {
     type Pub: Send + Sync + Serialize;
     type Sub: Send + Sync + DeserializeOwned;
 
     const NAME: &'static str;
+
+    fn serialize<S>(topic: &Self::Pub, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let data = (Self::NAME, topic);
+        data.serialize(serializer)
+    }
+
+    fn deserialize<T, D>(deserializer: D) -> Result<(String, T), D::Error>
+    where
+        T: DeserializeOwned,
+        D: Deserializer<'static>,
+    {
+        <(String, T)>::deserialize(deserializer)
+    }
 }
 
 pub trait Service {
-    type Req: Send + Sync + Serialize + DeserializeOwned;
-    type Res: Send + Sync + Serialize + DeserializeOwned;
+    type Req: Send + Sync + Serialize + DeserializeOwned + 'static;
+    type Res: Send + Sync + Serialize + DeserializeOwned + 'static;
 
     const NAME: &'static str;
 }
@@ -58,17 +77,20 @@ pub mod topic {
     use blockchain_core::*;
 
     create_topic!(PubsubExample; i32 => i32);
+    create_topic!(NotifyAddress; Address);
+    create_topic!(NotifyTransfer; Transfer<Verified> => Transfer<Yet>);
     create_topic!(CreateTransaction; Transaction<Verified, Verified> => Transaction<Yet, Yet>);
     create_topic!(NotifyBlock; VerifiedBlock => UnverifiedBlock);
+    create_topic!(NotifyBlockHeight; BlockHeight);
 }
 
 pub mod service {
     use super::*;
     use blockchain_core::*;
 
+    create_service!(QueryExample; i32 => String);
     create_service!(QueryBlockByHeight; BlockHeight => UnverifiedBlock);
     create_service!(QueryUtxoByAddress; Address => Vec<Transfer<Yet>>);
-    create_service!(QueryExample; i32 => String);
 }
 
 #[cfg(test)]

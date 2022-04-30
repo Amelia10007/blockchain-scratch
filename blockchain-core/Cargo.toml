@@ -16,15 +16,16 @@ path = "example/pow.rs"
 [dependencies]
 apply = "*"
 arrayvec = { version = "*", features = ["serde"] }
+cell = "*"
 chrono = { version = "*", features = ["serde"] }
-ed25519-dalek = { version = "*", features = ["serde"] }
+ed25519-dalek = { version = "1", features = ["serde"] }
 is_sorted = "*"
 itertools = "*"
-rand = "*"
-rand_core = { version = "*", features = ["getrandom"] }
+rand = "0.7.0"
 serde = { version = "*", features = ["derive"] }
 serde_arrays = "*"
 sha2 = "*"
+slab_tree = "*"
 
 [dev-dependencies]
 serde_json = "*"

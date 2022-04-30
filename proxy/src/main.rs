@@ -6,10 +6,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating proxy...");
     let proxy_tx = TopicProxy::<CreateTransaction>::bind().await?;
     let proxy_block = TopicProxy::<NotifyBlock>::bind().await?;
+    let proxy_block_height = TopicProxy::<NotifyBlockHeight>::bind().await?;
 
     println!("Running proxy...");
     let handle_tx = proxy_tx.start();
     let handle_block = proxy_block.start();
+    let handle_block_height=proxy_block_height.start();
 
     // Wait enter key
     {
@@ -21,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Required for graceful shutdown
     handle_tx.join().await?;
     handle_block.join().await?;
+    handle_block_height.join().await?;
 
     println!("Bye.");
     Ok(())

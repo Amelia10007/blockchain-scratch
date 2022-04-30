@@ -55,7 +55,7 @@ fn main() {
     let block = block.verify_transaction_relation(gen_rule).unwrap();
     let block = block.verify_utxo(|_| true).unwrap();
     let block = block.verify_digest().unwrap();
-    let block = block.verify_previous_block(|_| None, |_| None).unwrap();
+    let block = block.verify_previous_block(|_, _| true).unwrap();
     let block = block.verify_difficulty(&difficulty).unwrap();
 
     // Display block json
@@ -69,7 +69,7 @@ fn main() {
     let de = de.verify_transaction_relation(gen_rule).unwrap();
     let de = de.verify_utxo(|_| true).unwrap();
     let de = de.verify_digest().unwrap();
-    let de = de.verify_previous_block(|_| None, |_| None).unwrap();
+    let de = de.verify_previous_block(|_, _| true).unwrap();
     let de = de.verify_difficulty(&difficulty).unwrap();
 
     assert_eq!(de, block);
