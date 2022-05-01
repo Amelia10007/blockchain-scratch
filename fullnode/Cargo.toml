@@ -10,15 +10,12 @@ anyhow = "*"
 blockchain-core = { path = "../blockchain-core" }
 blockchain-net = { path = "../blockchain-net" }
 bcaddr = { path = "../bcaddr" }
-bincode = "*"
 clap = { version = "*", features = ["derive"] }
 env_logger = "*"
 hex = "*"
 log = "*"
 rand = "*"
-serde = { version = "*", features = ["derive"] }
 tokio = "*"
-
 
 [[bin]]
 name = "bcfnode"

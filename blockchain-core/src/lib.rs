@@ -3,23 +3,23 @@ pub mod block;
 pub mod coin;
 pub mod difficulty;
 pub mod digest;
-pub mod history;
-pub mod pace_maker;
+pub mod ledger;
 pub mod signature;
 pub mod timestamp;
 pub mod transaction;
-pub mod transfer;
+pub mod transition;
 pub mod verification;
-
-pub use verification::{Verified, Yet};
 
 pub use account::{Address, SecretAddress};
 pub use block::{Block, BlockHeight, BlockSource};
 pub use coin::Coin;
 pub use difficulty::Difficulty;
 pub use transaction::Transaction;
-pub use transfer::Transfer;
+pub use transition::{Generation, Transfer, Transition};
+pub use verification::{Verified, Yet};
 
+pub type UnverifiedTransaction = Transaction<Yet, Yet>;
+pub type VerifiedTransaction = Transaction<Verified, Verified>;
 pub type UnverifiedBlock = block::Block<Yet, Yet, Yet, Yet, Yet, Yet>;
 pub type VerifiedBlock = block::Block<Verified, Verified, Verified, Verified, Verified, Verified>;
 

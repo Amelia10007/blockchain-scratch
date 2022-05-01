@@ -1,14 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signature(ed25519_dalek::Signature);
-
-impl Signature {
-    pub fn from(sign: ed25519_dalek::Signature) -> Self {
-        Self(sign)
-    }
-}
 
 impl Hash for Signature {
     fn hash<H>(&self, state: &mut H)
@@ -19,9 +14,22 @@ impl Hash for Signature {
     }
 }
 
+impl From<ed25519_dalek::Signature> for Signature {
+    fn from(s: ed25519_dalek::Signature) -> Self {
+        Self(s)
+    }
+}
+
 impl AsRef<ed25519_dalek::Signature> for Signature {
     fn as_ref(&self) -> &ed25519_dalek::Signature {
         &self.0
+    }
+}
+
+impl Display for Signature {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let encode = hex::encode(self.0);
+        encode.fmt(f)
     }
 }
 

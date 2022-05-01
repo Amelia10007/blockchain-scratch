@@ -1,7 +1,9 @@
 use crate::signature::{SignatureBuilder, SignatureSource};
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display, Formatter};
 use std::iter::Sum;
 use std::ops::{Add, Sub};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Coin(u64);
@@ -18,9 +20,23 @@ impl SignatureSource for Coin {
     }
 }
 
+impl Display for Coin {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl Default for Coin {
     fn default() -> Self {
         Coin::from(u64::default())
+    }
+}
+
+impl FromStr for Coin {
+    type Err = <u64 as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        u64::from_str(s).map(Coin)
     }
 }
 

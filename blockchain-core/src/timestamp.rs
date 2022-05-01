@@ -1,8 +1,8 @@
 use crate::signature::{SignatureBuilder, SignatureSource};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::ops::{Add, Sub};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Timestamp(DateTime<Utc>);
@@ -28,28 +28,14 @@ impl Hash for Timestamp {
     }
 }
 
-impl Sub for Timestamp {
-    type Output = Duration;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        let duration = self.0 - rhs.0;
-        Duration(duration)
+impl Display for Timestamp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
 impl SignatureSource for Timestamp {
     fn write_bytes(&self, builder: &mut SignatureBuilder) {
         builder.write_bytes(&self.0.naive_utc().timestamp_nanos().to_le_bytes());
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Duration(chrono::Duration);
-
-impl Add for Duration {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
     }
 }

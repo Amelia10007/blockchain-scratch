@@ -1,6 +1,6 @@
 use crate::block::BlockError;
 use crate::digest::BlockDigest;
-use crate::transfer::TransactionBranch;
+use crate::transition::Transition;
 use crate::verification::Verified;
 use crate::{Address, Block, VerifiedBlock, Yet};
 use apply::Also;
@@ -11,30 +11,32 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 
+/// Wrapper for implementation of Hash.
+/// Hasher uses sign of transition.
 #[derive(Debug, PartialEq, Eq)]
-struct TransactionBranchWrapper(TransactionBranch<Verified>);
+struct TransitionWrapper(Transition<Verified>);
 
-impl Hash for TransactionBranchWrapper {
+impl Hash for TransitionWrapper {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.sign().hash(state)
     }
 }
 
-impl From<TransactionBranch<Verified>> for TransactionBranchWrapper {
-    fn from(t: TransactionBranch<Verified>) -> Self {
+impl From<Transition<Verified>> for TransitionWrapper {
+    fn from(t: Transition<Verified>) -> Self {
         Self(t)
     }
 }
 
-impl AsRef<TransactionBranch<Verified>> for TransactionBranchWrapper {
-    fn as_ref(&self) -> &TransactionBranch<Verified> {
+impl AsRef<Transition<Verified>> for TransitionWrapper {
+    fn as_ref(&self) -> &Transition<Verified> {
         &self.0
     }
 }
 
 #[derive(Debug)]
 struct TransferHistory {
-    status_map: HashMap<TransactionBranchWrapper, State>,
+    status_map: HashMap<TransitionWrapper, State>,
 }
 
 impl TransferHistory {
@@ -44,14 +46,14 @@ impl TransferHistory {
         }
     }
 
-    fn state_of(&self, transfer: &TransactionBranchWrapper) -> State {
+    fn state_of(&self, transfer: &TransitionWrapper) -> State {
         self.status_map
             .get(transfer)
             .copied()
             .unwrap_or(State::Unlisted)
     }
 
-    fn utxos(&self) -> impl Iterator<Item = &TransactionBranchWrapper> + '_ {
+    fn utxos(&self) -> impl Iterator<Item = &TransitionWrapper> + '_ {
         self.status_map
             .iter()
             .filter(|(_, state)| **state == State::Unused)
@@ -62,7 +64,7 @@ impl TransferHistory {
         // A block contains double-spending input?
         if !block
             .inputs()
-            .map(crate::transfer::TransactionBranch::sign)
+            .map(crate::transition::Transition::sign)
             .all_unique()
         {
             return Err(TransferHistoryError::DoubleSpending);
@@ -90,10 +92,7 @@ impl TransferHistory {
         Ok(())
     }
 
-    fn next_state_input(
-        &self,
-        input: &TransactionBranchWrapper,
-    ) -> Result<State, TransferHistoryError> {
+    fn next_state_input(&self, input: &TransitionWrapper) -> Result<State, TransferHistoryError> {
         match self.state_of(input) {
             State::Unlisted => Err(TransferHistoryError::Unlisted),
             State::Unused => Ok(State::Used),
@@ -101,10 +100,7 @@ impl TransferHistory {
         }
     }
 
-    fn next_state_output(
-        &self,
-        output: &TransactionBranchWrapper,
-    ) -> Result<State, TransferHistoryError> {
+    fn next_state_output(&self, output: &TransitionWrapper) -> Result<State, TransferHistoryError> {
         match self.state_of(output) {
             State::Unlisted => Ok(State::Unused),
             State::Unused | State::Used => Err(TransferHistoryError::Collision),
@@ -119,7 +115,7 @@ enum State {
     Used,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TransferHistoryError {
     DoubleSpending,
     Collision,
@@ -158,11 +154,7 @@ impl Ledger {
         self.node_by_digest(digest).map(|node| node.data())
     }
 
-    pub fn build_utxos(
-        &self,
-        digest: &BlockDigest,
-        holder: &Address,
-    ) -> Vec<TransactionBranch<Verified>> {
+    pub fn build_utxos(&self, digest: &BlockDigest, holder: &Address) -> Vec<Transition<Verified>> {
         let mut transfer_history = TransferHistory::new();
 
         let blocks = self
@@ -243,7 +235,7 @@ impl Ledger {
             transactions
                 .iter()
                 .flat_map(|t| t.inputs().iter().chain(t.outputs().iter()))
-                .map(|tx_branch| transfer_history.state_of(&tx_branch.clone().into()))
+                .map(|transition| transfer_history.state_of(&transition.clone().into()))
                 .all(|s| matches!(s, State::Unlisted | State::Unused))
         })?;
 
@@ -331,7 +323,7 @@ impl<'a> Iterator for BlockchainUpstream<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum LedgerError {
     IsolatedBlock,
     DuplicatedBlock,

@@ -1,8 +1,6 @@
 use crate::Service;
-use reqwest::{
-    blocking::{Client, ClientBuilder, Response},
-    Url,
-};
+use reqwest::blocking::{Client, ClientBuilder, Response};
+use reqwest::Url;
 use std::{marker::PhantomData, net::SocketAddr};
 use warp::Filter;
 

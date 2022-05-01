@@ -5,7 +5,7 @@ use crate::digest::BlockDigest;
 use crate::signature::{SignatureBuilder, SignatureSource};
 use crate::timestamp::Timestamp;
 use crate::transaction::TransactionError;
-use crate::transfer::{Generation, TransactionBranch, Transfer};
+use crate::transition::{Generation, Transition, Transfer};
 use crate::verification::{Verified, Yet};
 use apply::Apply;
 use itertools::Itertools;
@@ -73,12 +73,12 @@ impl BlockSource {
             let in_qty = transactions
                 .iter()
                 .flat_map(Transaction::inputs)
-                .map(TransactionBranch::quantity)
+                .map(Transition::quantity)
                 .sum::<Coin>();
             let o_qty = transactions
                 .iter()
                 .flat_map(Transaction::outputs)
-                .map(TransactionBranch::quantity)
+                .map(Transition::quantity)
                 .sum::<Coin>();
             let r_qty = gen_rule(height) + in_qty - o_qty;
 
@@ -186,11 +186,11 @@ impl<VT, VTS, VU, VP, VDG, VDI> Block<VT, VTS, VU, VP, VDG, VDI> {
         &self.transactions
     }
 
-    pub fn inputs(&self) -> impl Iterator<Item = &TransactionBranch<VT>> + '_ {
+    pub fn inputs(&self) -> impl Iterator<Item = &Transition<VT>> + '_ {
         self.transactions.iter().flat_map(Transaction::inputs)
     }
 
-    pub fn outputs(&self) -> impl Iterator<Item = &TransactionBranch<VT>> + '_ {
+    pub fn outputs(&self) -> impl Iterator<Item = &Transition<VT>> + '_ {
         self.transactions.iter().flat_map(Transaction::outputs)
     }
 
@@ -267,13 +267,13 @@ impl<VT, VU, VP, VDG, VDI> Block<VT, Yet, VU, VP, VDG, VDI> {
             .transactions
             .iter()
             .flat_map(Transaction::inputs)
-            .map(TransactionBranch::quantity)
+            .map(Transition::quantity)
             .sum::<Coin>();
         let o_qty = self
             .transactions
             .iter()
             .flat_map(Transaction::outputs)
-            .map(TransactionBranch::quantity)
+            .map(Transition::quantity)
             .sum::<Coin>();
         let r_qty = gen_rule(self.height);
 
@@ -458,7 +458,7 @@ impl Display for BlockError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             BlockError::Transaction(e) => write!(f, "Block contains an invalid transaction: {}", e),
-            BlockError::TransactionQuantity => write!(f, "Invalid transactio quantity balance"),
+            BlockError::TransactionQuantity => write!(f, "Invalid transaction quantity balance"),
             BlockError::TransactionTimestamp => {
                 write!(f, "Block contains a newer transaction than itself")
             }

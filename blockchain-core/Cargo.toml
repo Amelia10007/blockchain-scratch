@@ -15,10 +15,9 @@ path = "example/pow.rs"
 
 [dependencies]
 apply = "*"
-arrayvec = { version = "*", features = ["serde"] }
-cell = "*"
 chrono = { version = "*", features = ["serde"] }
 ed25519-dalek = { version = "1", features = ["serde"] }
+hex = "*"
 is_sorted = "*"
 itertools = "*"
 rand = "0.7.0"

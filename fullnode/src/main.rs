@@ -1,13 +1,14 @@
 use anyhow::Result;
 use blockchain_core::block::block_coin_generation_rule;
 use blockchain_core::digest::BlockDigest;
-use blockchain_core::history::{Ledger, LedgerError};
+use blockchain_core::ledger::{Ledger, LedgerError};
 use blockchain_core::{Block, BlockHeight, BlockSource, SecretAddress, VerifiedBlock, Yet};
 use blockchain_core::{Difficulty, Transaction, UnverifiedBlock, Verified};
 use blockchain_net::async_net::{Publisher, Subscriber};
-use blockchain_net::impl_zeromq::TopicPublisher;
-use blockchain_net::topic::{CreateTransaction, NotifyBlockHeight};
-use blockchain_net::{impl_zeromq::TopicSubscriber, topic::NotifyBlock};
+use blockchain_net::impl_zeromq::{TopicPublisher, TopicSubscriber};
+use blockchain_net::topic::{
+    CreateTransaction, NotifyBlock, NotifyBlockHeight, RequestUtxoByAddress, RespondUtxoByAddress,
+};
 use clap::Parser;
 use log::{error, info, warn};
 use rand::Rng;
@@ -199,6 +200,12 @@ fn spawn_mining_join_handle(
                 continue;
             }
 
+            if next_height > BlockHeight::genesis() && transactions.is_empty() {
+                warn!("No transaction come yet. Wait for transactions...");
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+
             let block_src = BlockSource::new(
                 next_height,
                 transactions,
@@ -218,7 +225,7 @@ fn spawn_mining_join_handle(
                     match res {
                         Ok(block) => {
                             info!(
-                                "Verified new block. Height: {}, Digest: {}",
+                                "Found new block. Height: {}, Digest: {}",
                                 block.height(),
                                 hex::encode(block.digest())
                             );
@@ -239,7 +246,13 @@ fn spawn_mining_join_handle(
                                 Err(e) => error!("Error during adding new block. {}", e),
                             }
                         }
-                        Err(e) => error!("Error during verifying block. {}", e),
+                        Err(e) => {
+                            // Clear all incoming transactions since they contains invalid transactions,
+                            // which may prevent next verification process.
+                            warn!("Block verification failed: {}", e);
+                            warn!("Clear incoming transactions.");
+                            incoming_transactions.lock().expect("Lock failure").clear();
+                        }
                     }
                 }
             }
@@ -262,6 +275,42 @@ fn spawn_block_publisher(
             }
         }
         warn!("Block publisher thread finished. Inner block publication functionality may have finished");
+    })
+}
+
+fn spawn_utxo_pubsub(
+    mut publisher: TopicPublisher<RespondUtxoByAddress>,
+    mut subscriber: TopicSubscriber<RequestUtxoByAddress>,
+    ledger: Arc<Mutex<Ledger>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let address = match subscriber.recv().await {
+                Ok(address) => address,
+                Err(e) => {
+                    error!("Error during receiving UTXO request: {}", e);
+                    continue;
+                }
+            };
+
+            // List UTXO of requested address in the longest chain
+            let utxos = {
+                let ledger = ledger.lock().expect("Lock failure");
+                let latest_block = match ledger.search_latest_block() {
+                    Some(block) => block,
+                    None => {
+                        warn!("No block exists in local ledger.");
+                        continue;
+                    }
+                };
+                ledger.build_utxos(latest_block.digest(), &address)
+            };
+
+            match publisher.publish(&utxos).await {
+                Ok(_) => info!("Publish {} UTXO of {}.", utxos.len(), address),
+                Err(e) => error!("Error during publishing UTXO: {}", e),
+            }
+        }
     })
 }
 
@@ -296,6 +345,8 @@ async fn main() -> Result<()> {
     let block_publisher = TopicPublisher::<NotifyBlock>::connect().await?;
     let block_height_publisher = TopicPublisher::<NotifyBlockHeight>::connect().await?;
     let block_height_subscriber = TopicSubscriber::<NotifyBlockHeight>::connect().await?;
+    let utxo_publisher = TopicPublisher::<RespondUtxoByAddress>::connect().await?;
+    let utxo_subscriber = TopicSubscriber::<RequestUtxoByAddress>::connect().await?;
 
     let (block_publish_sender, block_publish_receiver) = tokio::sync::mpsc::channel(10);
 
@@ -320,6 +371,7 @@ async fn main() -> Result<()> {
     );
     let block_publisher_join_handle =
         spawn_block_publisher(block_publisher, block_publish_receiver);
+    let utxo_pubsub_join_handle = spawn_utxo_pubsub(utxo_publisher, utxo_subscriber, ledger);
 
     info!("Initialization done. A blockchain-fullnode runnning...");
 
@@ -329,6 +381,7 @@ async fn main() -> Result<()> {
     block_height_subscriber_join_handle.await?;
     mining_join_handle.await?;
     block_publisher_join_handle.await?;
+    utxo_pubsub_join_handle.await?;
 
     Ok(())
 }

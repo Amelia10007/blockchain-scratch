@@ -6,3 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "*"
+blockchain-core = { path = "../blockchain-core" }
+blockchain-net = { path = "../blockchain-net" }
+bcaddr = { path = "../bcaddr" }
+clap = { version = "*", features = ["derive"] }
+tokio = "*"

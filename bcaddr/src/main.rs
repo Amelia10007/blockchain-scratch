@@ -34,9 +34,7 @@ fn main() -> anyhow::Result<()> {
             None => bail!("Provide address file."),
         };
         let address = bcaddr::read_address(input).map(|addr| addr.to_public_address())?;
-        let bytes = bincode::serialize(&address)?;
-        let hex = hex::encode(bytes);
-        println!("Public address: {}", hex);
+        println!("Public address: {}", address);
     }
 
     Ok(())

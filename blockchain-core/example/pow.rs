@@ -4,7 +4,7 @@ use blockchain_core::coin::Coin;
 use blockchain_core::difficulty::Difficulty;
 use blockchain_core::digest::BlockDigest;
 use blockchain_core::transaction::*;
-use blockchain_core::transfer::*;
+use blockchain_core::transition::*;
 
 fn main() {
     let input_sender = SecretAddress::create();

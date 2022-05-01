@@ -2,9 +2,7 @@ use crate::account::{Address, SecretAddress};
 use crate::coin::Coin;
 use crate::signature::{Signature, SignatureBuilder, SignatureSource};
 use crate::timestamp::Timestamp;
-use crate::transfer::TransactionBranch;
-use crate::transfer::Transfer;
-use crate::transfer::TransferError;
+use crate::transition::{Transfer, TransferError, Transition};
 use crate::verification::{Verified, Yet};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::error::Error;
@@ -20,10 +18,10 @@ pub struct Transaction<VTF, VTX> {
     contractor: Address,
     /// At least 1 input is required.
     /// All receiver of inputs are contractor.
-    inputs: Vec<TransactionBranch<VTF>>,
+    inputs: Vec<Transition<VTF>>,
     /// At least 1 output is required.
     /// All signer of outputs are contractor.
-    outputs: Vec<TransactionBranch<VTF>>,
+    outputs: Vec<Transition<VTF>>,
     timestamp: Timestamp,
     /// Contractor's sign
     sign: Signature,
@@ -32,11 +30,11 @@ pub struct Transaction<VTF, VTX> {
 }
 
 impl<VTR, VTX> Transaction<VTR, VTX> {
-    pub fn inputs(&self) -> &[TransactionBranch<VTR>] {
+    pub fn inputs(&self) -> &[Transition<VTR>] {
         &self.inputs
     }
 
-    pub fn outputs(&self) -> &[TransactionBranch<VTR>] {
+    pub fn outputs(&self) -> &[Transition<VTR>] {
         &self.outputs
     }
 
@@ -52,8 +50,8 @@ impl<VTR> Transaction<VTR, Yet> {
         outputs: Vec<U>,
     ) -> Transaction<VTR, Yet>
     where
-        T: Into<TransactionBranch<VTR>>,
-        U: Into<TransactionBranch<VTR>>,
+        T: Into<Transition<VTR>>,
+        U: Into<Transition<VTR>>,
     {
         let inputs = inputs.into_iter().map(Into::into).collect::<Vec<_>>();
         let outputs = outputs.into_iter().map(Into::into).collect::<Vec<_>>();
@@ -96,22 +94,18 @@ impl<VTR> Transaction<VTR, Yet> {
         if self
             .outputs
             .iter()
-            .filter_map(TransactionBranch::try_as_transfer)
+            .filter_map(Transition::try_as_transfer)
             .any(|i| i.sender() != &self.contractor)
         {
             return Err(TransactionError::ReceiverMismatch);
         }
 
         // Input must be equal or smaller than output except for coin generation
-        let input_sum = self
-            .inputs
-            .iter()
-            .map(TransactionBranch::quantity)
-            .sum::<Coin>();
+        let input_sum = self.inputs.iter().map(Transition::quantity).sum::<Coin>();
         let output_sum_except_gen = self
             .outputs
             .iter()
-            .filter_map(TransactionBranch::try_as_transfer)
+            .filter_map(Transition::try_as_transfer)
             .map(Transfer::quantity)
             .sum::<Coin>();
         if input_sum < output_sum_except_gen {
@@ -148,23 +142,23 @@ impl<VTR> Transaction<VTR, Yet> {
 
 impl Transaction<Yet, Yet> {
     pub fn verify(self) -> Result<Transaction<Verified, Verified>, TransactionError> {
-        self.verify_branch()
+        self.verify_transition()
             .and_then(Transaction::verify_transaction)
     }
 }
 
 impl<VTX> Transaction<Yet, VTX> {
-    pub fn verify_branch(self) -> Result<Transaction<Verified, VTX>, TransactionError> {
+    pub fn verify_transition(self) -> Result<Transaction<Verified, VTX>, TransactionError> {
         let inputs = self
             .inputs
             .into_iter()
-            .map(TransactionBranch::verify)
+            .map(Transition::verify)
             .collect::<Result<_, _>>()
             .map_err(TransactionError::Transfer)?;
         let outputs = self
             .outputs
             .into_iter()
-            .map(TransactionBranch::verify)
+            .map(Transition::verify)
             .collect::<Result<_, _>>()
             .map_err(TransactionError::Transfer)?;
 
@@ -200,8 +194,8 @@ impl<'de> Deserialize<'de> for Transaction<Yet, Yet> {
         #[derive(Deserialize)]
         struct Inner {
             contractor: Address,
-            inputs: Vec<TransactionBranch<Yet>>,
-            outputs: Vec<TransactionBranch<Yet>>,
+            inputs: Vec<Transition<Yet>>,
+            outputs: Vec<Transition<Yet>>,
             timestamp: Timestamp,
             sign: Signature,
         }
@@ -264,8 +258,8 @@ impl Error for TransactionError {
 
 fn build_signature_source<T>(
     contractor: &Address,
-    inputs: &[TransactionBranch<T>],
-    outputs: &[TransactionBranch<T>],
+    inputs: &[Transition<T>],
+    outputs: &[Transition<T>],
     timestamp: Timestamp,
     builder: &mut SignatureBuilder,
 ) {
@@ -278,7 +272,7 @@ fn build_signature_source<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transfer::Generation;
+    use crate::Generation;
 
     #[test]
     fn test_sign_verify() {
@@ -333,7 +327,7 @@ mod tests {
         let gen = Generation::offer(&contractor, quantity).into();
 
         let inputs = vec![input];
-        let outputs: Vec<TransactionBranch<_>> = vec![output, gen];
+        let outputs: Vec<Transition<_>> = vec![output, gen];
 
         let tx = Transaction::offer(&contractor, inputs, outputs)
             .verify_transaction()
@@ -374,7 +368,7 @@ mod tests {
             contractor.to_public_address(),
             Coin::from(10),
         );
-        let outputs: Vec<TransactionBranch<_>> = vec![];
+        let outputs: Vec<Transition<_>> = vec![];
         let tx = Transaction::offer(&contractor, vec![input], outputs).verify_transaction();
 
         assert_eq!(Err(TransactionError::EmptyOutput), tx);
