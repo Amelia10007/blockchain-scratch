@@ -58,20 +58,16 @@ fn spawn_transaction_subscriber(
     tokio::task::spawn(async move {
         loop {
             match subscriber.recv().await {
-                Ok(transaction) => {
-                    info!("Received a transaction.");
-                    match transaction.verify() {
-                        Ok(transaction) => {
-                            info!("Verified the received transaction.");
-                            let mut incoming_transactions =
-                                incoming_transactions.lock().expect("Lock failure");
-                            incoming_transactions.push(transaction);
-                            incoming_transactions.sort_by_key(Transaction::timestamp);
-                            info!("Verified transaction was queued to incoming transactions.");
-                        }
-                        Err(e) => error!("Error during transaction verification. {}", e),
+                Ok(transaction) => match transaction.verify() {
+                    Ok(transaction) => {
+                        let mut incoming_transactions =
+                            incoming_transactions.lock().expect("Lock failure");
+                        incoming_transactions.push(transaction);
+                        incoming_transactions.sort_by_key(Transaction::timestamp);
+                        info!("有効な新規トランザクションを受け取った。キューに追加した");
                     }
-                }
+                    Err(e) => error!("Error during transaction verification. {}", e),
+                },
                 Err(e) => error!("Error during subscribing transaction. {}", e),
             }
         }
@@ -87,13 +83,13 @@ fn spawn_block_subscriber(
             match subscriber.recv().await {
                 Ok(block) => {
                     info!(
-                        "Received block. Height: {}, Digest: {}",
+                        "ブロック{}を受け取った。ハッシュ：{}。検証開始...",
                         block.height(),
                         hex::encode(block.digest())
                     );
                     match block_subscription_event(block, ledger.clone()) {
-                        Ok(_) => info!("Successfully append the received block to ledger"),
-                        Err(e) => warn!("Deny incoming block. {}", e),
+                        Ok(_) => info!("OK。ブロックを台帳に保存した"),
+                        Err(e) => warn!("ブロックを拒否した：{}", e),
                     }
                 }
                 Err(e) => error!("Error during subscribing block. {}", e),
@@ -114,8 +110,6 @@ fn spawn_block_height_publisher(
                 .search_latest_block()
                 .map(Block::height)
                 .unwrap_or(BlockHeight::genesis());
-
-            info!("Publishing local chain height: {}...", height);
 
             match height_publisher.publish(&height).await {
                 Ok(()) => {}
@@ -148,7 +142,7 @@ fn spawn_block_height_subscriber(
                         continue;
                     }
 
-                    info!("Another node has shorter chain than this node's. Publishing the longest chain of this node...");
+                    info!("このノードよりも短いチェーンをもつノードがいる。同期のためチェーン情報を発信する...");
 
                     let mut current_height = BlockHeight::genesis();
                     loop {
@@ -162,7 +156,7 @@ fn spawn_block_height_subscriber(
                         // Publish
                         match block {
                             Some(block) => match publish_sender.send(block).await {
-                                Ok(_) => info!("Published block {}", current_height),
+                                Ok(_) => {}
                                 Err(e) => error!("Error during publishing block: {}", e),
                             },
                             None => break,
@@ -170,6 +164,7 @@ fn spawn_block_height_subscriber(
                         current_height = current_height.next();
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
+                    info!("チェーン発信が完了した");
                 }
                 Err(e) => error!("Error during subscribing block height. {}", e),
             }
@@ -200,12 +195,6 @@ fn spawn_mining_join_handle(
                 continue;
             }
 
-            if next_height > BlockHeight::genesis() && transactions.is_empty() {
-                warn!("No transaction come yet. Wait for transactions...");
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                continue;
-            }
-
             let block_src = BlockSource::new(
                 next_height,
                 transactions,
@@ -225,14 +214,14 @@ fn spawn_mining_join_handle(
                     match res {
                         Ok(block) => {
                             info!(
-                                "Found new block. Height: {}, Digest: {}",
+                                "Proof of Workによりブロック{}を発見した。ハッシュ：{}",
                                 block.height(),
                                 hex::encode(block.digest())
                             );
 
                             // Publish found block
                             match publish_sender.send(block.clone()).await {
-                                Ok(_) => info!("Published the latest block."),
+                                Ok(_) => info!("ブロック{}を発信した", block.height()),
                                 Err(e) => error!("Error during publishing a block. {}", e),
                             }
 
@@ -242,7 +231,7 @@ fn spawn_mining_join_handle(
                             // Append new block to ledger
                             let mut ledger = ledger.lock().expect("Lock failure");
                             match ledger.entry(block.clone()) {
-                                Ok(_) => info!("Successfully appended new block."),
+                                Ok(_) => info!("ブロック{}を保存した", block.height()),
                                 Err(e) => error!("Error during adding new block. {}", e),
                             }
                         }
@@ -307,7 +296,11 @@ fn spawn_utxo_pubsub(
             };
 
             match publisher.publish(&utxos).await {
-                Ok(_) => info!("Publish {} UTXO of {}.", utxos.len(), address),
+                Ok(_) => info!(
+                    "アドレス{}の未使用トランザクション出力{}個を発信した",
+                    address,
+                    utxos.len()
+                ),
                 Err(e) => error!("Error during publishing UTXO: {}", e),
             }
         }
