@@ -10,13 +10,9 @@ blockchain-core = { path = "../blockchain-core" }
 apply = "*"
 async-trait = "*"
 bincode = "*"
-bytes = "*"
-reqwest = { version = "*", features = ["blocking"] }
 serde = { version = "*", features = ["derive"] }
-serde_json = "*"
 zeromq = { version = "*", optional = true }
 tokio = "*"
-warp = "*"
 
 [dev-dependencies]
 tokio = "*"
@@ -49,15 +45,3 @@ path = "./example/client.rs"
 [[example]]
 name = "service_proxy"
 path = "./example/service_proxy.rs"
-
-[[example]]
-name = "entrance"
-path = "./example/entrance.rs"
-
-[[example]]
-name = "publisher"
-path = "./example/publisher.rs"
-
-[[example]]
-name = "subscriber"
-path = "./example/subscriber.rs"

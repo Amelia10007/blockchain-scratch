@@ -7,9 +7,6 @@ pub mod async_net;
 #[cfg(feature = "zeromq")]
 pub mod impl_zeromq;
 
-pub mod blocking;
-pub mod http;
-
 pub trait Topic {
     type Pub: Send + Sync + Serialize;
     type Sub: Send + Sync + DeserializeOwned;
