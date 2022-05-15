@@ -2,7 +2,7 @@ use crate::block::BlockError;
 use crate::digest::BlockDigest;
 use crate::transition::Transition;
 use crate::verification::Verified;
-use crate::{Address, Block, VerifiedBlock, Yet};
+use crate::{Address, Block, Transaction, VerifiedBlock, Yet};
 use apply::Also;
 use itertools::Itertools;
 use slab_tree::{Ancestors, NodeId, NodeMut, NodeRef, RemoveBehavior, Tree};
@@ -13,7 +13,7 @@ use std::hash::Hash;
 
 /// Wrapper for implementation of Hash.
 /// Hasher uses sign of transition.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TransitionWrapper(Transition<Verified>);
 
 impl Hash for TransitionWrapper {
@@ -36,28 +36,20 @@ impl AsRef<Transition<Verified>> for TransitionWrapper {
 
 #[derive(Debug)]
 struct TransferHistory {
-    status_map: HashMap<TransitionWrapper, State>,
+    utxos: Vec<Transition<Verified>>,
 }
 
 impl TransferHistory {
     fn new() -> Self {
-        Self {
-            status_map: HashMap::new(),
-        }
+        Self { utxos: vec![] }
     }
 
-    fn state_of(&self, transfer: &TransitionWrapper) -> State {
-        self.status_map
-            .get(transfer)
-            .copied()
-            .unwrap_or(State::Unlisted)
+    fn utxos(&self) -> impl Iterator<Item = &Transition<Verified>> + '_ {
+        self.utxos.iter()
     }
 
-    fn utxos(&self) -> impl Iterator<Item = &TransitionWrapper> + '_ {
-        self.status_map
-            .iter()
-            .filter(|(_, state)| **state == State::Unused)
-            .map(|(key, _)| key)
+    fn is_utxo(&self, transition: &Transition<Verified>) -> bool {
+        self.utxos.iter().find(|u| u.sign() == transition.sign()).is_some()
     }
 
     fn push_block(&mut self, block: &VerifiedBlock) -> Result<(), TransferHistoryError> {
@@ -70,49 +62,30 @@ impl TransferHistory {
             return Err(TransferHistoryError::DoubleSpending);
         }
 
-        // Scan next status of each transfer
-        let inputs = block
-            .inputs()
-            .map(|t| self.next_state_input(&t.clone().into()).map(|s| (t, s)));
+        let mut next_utxos = self.utxos.clone();
 
-        let outputs = block
-            .outputs()
-            .map(|t| self.next_state_output(&t.clone().into()).map(|s| (t, s)));
+        // Verify transactions in order of timestamp
+        for tx in block.transactions() {
+            for input in tx.inputs() {
+                match next_utxos.iter().find(|u| *u == input) {
+                    Some(_) => next_utxos.retain(|u| u != input),
+                    None => return Err(TransferHistoryError::Unlisted),
+                }
+            }
 
-        let next_states = inputs.chain(outputs).collect::<Result<Vec<_>, _>>()?;
-
-        for (transfer, status) in next_states.into_iter() {
-            let wrapper = transfer.clone().into();
-            self.status_map
-                .entry(wrapper)
-                .and_modify(|s| *s = status)
-                .or_insert(status);
+            for output in tx.outputs() {
+                match next_utxos.iter().find(|u| *u == output) {
+                    Some(_) => return Err(TransferHistoryError::Collision),
+                    None => next_utxos.push(output.clone()),
+                }
+            }
         }
+
+        // Update UTXO history if all transaction verification passed
+        self.utxos = next_utxos;
 
         Ok(())
     }
-
-    fn next_state_input(&self, input: &TransitionWrapper) -> Result<State, TransferHistoryError> {
-        match self.state_of(input) {
-            State::Unlisted => Err(TransferHistoryError::Unlisted),
-            State::Unused => Ok(State::Used),
-            State::Used => Err(TransferHistoryError::DoubleSpending),
-        }
-    }
-
-    fn next_state_output(&self, output: &TransitionWrapper) -> Result<State, TransferHistoryError> {
-        match self.state_of(output) {
-            State::Unlisted => Ok(State::Unused),
-            State::Unused | State::Used => Err(TransferHistoryError::Collision),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Unlisted,
-    Unused,
-    Used,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -167,7 +140,6 @@ impl Ledger {
 
         transfer_history
             .utxos()
-            .map(AsRef::as_ref)
             .filter(|utxo| utxo.receiver() == holder)
             .cloned()
             .collect()
@@ -232,11 +204,18 @@ impl Ledger {
 
         // Verify transaction
         let block = block.verify_utxo(|transactions| {
-            transactions
+            // All transaction inputs must be UTXO
+            let cond_in = transactions
                 .iter()
-                .flat_map(|t| t.inputs().iter().chain(t.outputs().iter()))
-                .map(|transition| transfer_history.state_of(&transition.clone().into()))
-                .all(|s| matches!(s, State::Unlisted | State::Unused))
+                .flat_map(Transaction::inputs)
+                .all(|i| transfer_history.is_utxo(i));
+            // All transaction outputs must not be UTXO
+            let cond_out = transactions
+                .iter()
+                .flat_map(Transaction::outputs)
+                .all(|o| !transfer_history.is_utxo(o));
+
+            cond_in && cond_out
         })?;
 
         Ok(block)
@@ -274,7 +253,7 @@ impl Ledger {
                     self.digest_map.insert(digest, id);
                     Ok(())
                 } else {
-                    Err(LedgerError::IsolatedBlock)
+                    Err(LedgerError::DuplicatedGenesisBlock)
                 }
             }
         }
@@ -327,6 +306,7 @@ impl<'a> Iterator for BlockchainUpstream<'a> {
 pub enum LedgerError {
     IsolatedBlock,
     DuplicatedBlock,
+    DuplicatedGenesisBlock,
     Transfer(TransferHistoryError),
     Block(BlockError),
 }
@@ -346,6 +326,9 @@ impl Display for LedgerError {
             LedgerError::DuplicatedBlock => {
                 write!(f, "Cannot entry a duplicated block into ledger")
             }
+            LedgerError::DuplicatedGenesisBlock => {
+                write!(f, "This ledger already has genesis block")
+            }
             LedgerError::Transfer(e) => e.fmt(f),
             LedgerError::Block(e) => e.fmt(f),
         }
@@ -357,6 +340,7 @@ impl Error for LedgerError {
         match self {
             LedgerError::IsolatedBlock => None,
             LedgerError::DuplicatedBlock => None,
+            LedgerError::DuplicatedGenesisBlock => None,
             LedgerError::Transfer(e) => Some(e),
             LedgerError::Block(e) => Some(e),
         }

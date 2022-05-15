@@ -77,6 +77,7 @@ fn spawn_transaction_subscriber(
 fn spawn_block_subscriber(
     mut subscriber: TopicSubscriber<NotifyBlock>,
     ledger: Arc<Mutex<Ledger>>,
+    incoming_transactions: Arc<Mutex<Vec<Transaction<Verified, Verified>>>>,
 ) -> JoinHandle<()> {
     tokio::task::spawn(async move {
         loop {
@@ -88,7 +89,11 @@ fn spawn_block_subscriber(
                         hex::encode(block.digest())
                     );
                     match block_subscription_event(block, ledger.clone()) {
-                        Ok(_) => info!("OK。ブロックを台帳に保存した"),
+                        Ok(_) => {
+                            // Clear incoming transaction, since they are verified and added to new block
+                            incoming_transactions.lock().expect("Lock failure").clear();
+                            info!("OK。ブロックを台帳に保存した")
+                        }
                         Err(e) => warn!("ブロックを拒否した：{}", e),
                     }
                 }
@@ -285,14 +290,10 @@ fn spawn_utxo_pubsub(
             // List UTXO of requested address in the longest chain
             let utxos = {
                 let ledger = ledger.lock().expect("Lock failure");
-                let latest_block = match ledger.search_latest_block() {
-                    Some(block) => block,
-                    None => {
-                        warn!("No block exists in local ledger.");
-                        continue;
-                    }
-                };
-                ledger.build_utxos(latest_block.digest(), &address)
+                match ledger.search_latest_block() {
+                    Some(latest_block) => ledger.build_utxos(latest_block.digest(), &address),
+                    None => vec![],
+                }
             };
 
             match publisher.publish(&utxos).await {
@@ -347,7 +348,11 @@ async fn main() -> Result<()> {
 
     let transaction_subsctiber_join_handle =
         spawn_transaction_subscriber(transaction_subscriber, incoming_transactions.clone());
-    let block_subscriber_join_handle = spawn_block_subscriber(block_subscriber, ledger.clone());
+    let block_subscriber_join_handle = spawn_block_subscriber(
+        block_subscriber,
+        ledger.clone(),
+        incoming_transactions.clone(),
+    );
     let block_height_publisher_join_handle =
         spawn_block_height_publisher(block_height_publisher, ledger.clone());
     let block_height_subscriber_join_handle = spawn_block_height_subscriber(
