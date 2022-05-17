@@ -117,8 +117,8 @@ fn spawn_block_height_publisher(
                 .map(Block::height);
 
             match height {
-                Some(height) => info!("Publishing local chain height: {:?}...", height),
-                None => info!("Publishing local chain height: None..."),
+                Some(height) => info!("このノードがもつブロックの長さを広報する: {:?}...", height),
+                None => info!("このノードがブロックを持っていないことを広報する"),
             }
 
             match height_publisher.publish(&height).await {
@@ -202,7 +202,13 @@ fn spawn_mining_join_handle(
 
             // Check whether mine genesis block
             if next_height == BlockHeight::genesis() && !mine_genesis_block {
-                warn!("Mining genesis block is disabled. Wait for genesis block from other nodes.");
+                warn!("このノードでブロック0を探すことは無効化されている。他ノードがブロック0を広報してくるのを待つ。");
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+
+            if next_height > BlockHeight::genesis() && transactions.is_empty() {
+                warn!("新規トランザクションがない。ブロック作成を延期する。");
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
             }
