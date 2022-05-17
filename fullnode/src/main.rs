@@ -44,9 +44,10 @@ fn block_subscription_event(block: UnverifiedBlock, ledger: Arc<Mutex<Ledger>>) 
 
     match ledger.entry(block) {
         Ok(_) => Ok(()),
-        // This event catches a block published from this node.
+        // These events catch a block published from this node.
         // So ignore block duplication error, which occurs everytime on block publication.
         Err(LedgerError::DuplicatedBlock) => Ok(()),
+        Err(LedgerError::DuplicatedGenesisBlock) => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
