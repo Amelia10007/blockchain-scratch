@@ -49,7 +49,10 @@ impl TransferHistory {
     }
 
     fn is_utxo(&self, transition: &Transition<Verified>) -> bool {
-        self.utxos.iter().find(|u| u.sign() == transition.sign()).is_some()
+        self.utxos
+            .iter()
+            .find(|u| u.sign() == transition.sign())
+            .is_some()
     }
 
     fn push_block(&mut self, block: &VerifiedBlock) -> Result<(), TransferHistoryError> {
@@ -185,15 +188,15 @@ impl Ledger {
         // Build transfer history fron genesis to previous block
         let transfer_history = {
             let blocks = match previous_block {
-                Some(block) => block
-                    .ancestors()
-                    .map(|node| node.data())
+                Some(block) => self
+                    .upstream_chain_from(block.data().digest())
                     .collect_vec()
                     .also(|blocks| blocks.reverse()),
                 None => vec![],
             };
 
             let mut transfer_history = TransferHistory::new();
+            // Append blocks from genesis to last-verified block into history
             for block in blocks.into_iter() {
                 if let Err(e) = transfer_history.push_block(&block) {
                     return Err(LedgerError::Transfer(e));

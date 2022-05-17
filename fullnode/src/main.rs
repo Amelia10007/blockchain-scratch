@@ -114,8 +114,12 @@ fn spawn_block_height_publisher(
                 .lock()
                 .expect("Lock failure")
                 .search_latest_block()
-                .map(Block::height)
-                .unwrap_or(BlockHeight::genesis());
+                .map(Block::height);
+
+            match height {
+                Some(height) => info!("Publishing local chain height: {:?}...", height),
+                None => info!("Publishing local chain height: None..."),
+            }
 
             match height_publisher.publish(&height).await {
                 Ok(()) => {}
@@ -144,8 +148,10 @@ fn spawn_block_height_subscriber(
                         };
                     // If this ledger has longer chain than other,
                     // publish the longest chain of local ledger
-                    if other_node_height >= local_block_height {
-                        continue;
+                    match other_node_height {
+                        Some(other) if other >= local_block_height => continue,
+                        Some(_) => {}
+                        None => {}
                     }
 
                     info!("このノードよりも短いチェーンをもつノードがいる。同期のためチェーン情報を発信する...");
