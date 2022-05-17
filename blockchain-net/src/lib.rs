@@ -78,7 +78,7 @@ pub mod topic {
     create_topic!(NotifyTransfer; Transfer<Verified> => Transfer<Yet>);
     create_topic!(CreateTransaction; VerifiedTransaction => UnverifiedTransaction);
     create_topic!(NotifyBlock; VerifiedBlock => UnverifiedBlock);
-    create_topic!(NotifyBlockHeight; BlockHeight);
+    create_topic!(NotifyBlockHeight; Option<BlockHeight>);
     create_topic!(RequestUtxoByAddress; Address);
     create_topic!(RespondUtxoByAddress; Vec<Transition<Verified>> => Vec<Transition<Yet>>);
 }
